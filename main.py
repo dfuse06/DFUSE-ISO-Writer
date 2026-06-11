@@ -20,6 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
 class WriterThread(QThread):
     progress = Signal(int)
     stats = Signal(str)
@@ -57,7 +65,7 @@ class WriterThread(QThread):
             line = process.stderr.readline()
 
             if line:
-                match = re.search(r"(\d+)\s+bytes", line)
+                match = re.search(r"(\\d+)\\s+bytes", line)
 
                 if match:
                     written = int(match.group(1))
@@ -117,7 +125,7 @@ class MainWindow(QWidget):
 
         self.setWindowTitle("DFUSE ISO Writer v0.1")
         self.resize(700, 520)
-        self.setWindowIcon(QIcon("dfuse_iso.png"))
+        self.setWindowIcon(QIcon(resource_path("dfuse_iso.png")))
 
         self.iso_path = ""
         self.writer_thread = None
@@ -172,13 +180,15 @@ class MainWindow(QWidget):
             self,
             "Select ISO",
             "",
-            "ISO Files (*.iso)"
+            "ISO Files (*.iso)",
         )
 
         if file_path:
             self.iso_path = file_path
             size_gb = os.path.getsize(file_path) / (1024 ** 3)
-            self.iso_label.setText(f"{os.path.basename(file_path)} | {size_gb:.2f} GB")
+            self.iso_label.setText(
+                f"{os.path.basename(file_path)} | {size_gb:.2f} GB"
+            )
             self.progress.setValue(0)
             self.stats_label.setText("Speed: -- MB/s  |  ETA: --")
 
@@ -188,7 +198,7 @@ class MainWindow(QWidget):
         result = subprocess.run(
             ["lsblk", "-dn", "-o", "NAME,SIZE,TRAN,TYPE,MODEL,VENDOR"],
             capture_output=True,
-            text=True
+            text=True,
         )
 
         found_usb = False
@@ -226,7 +236,7 @@ class MainWindow(QWidget):
         confirm = QMessageBox.question(
             self,
             "WARNING",
-            f"This will erase everything on:\n\n{device}\n\nContinue?"
+            f"This will erase everything on:\\n\\n{device}\\n\\nContinue?",
         )
 
         if confirm != QMessageBox.Yes:
@@ -260,7 +270,7 @@ class MainWindow(QWidget):
         QMessageBox.information(
             self,
             "Done",
-            "ISO successfully written to USB.\n\nYou can safely remove it now."
+            "ISO successfully written to USB.\\n\\nYou can safely remove it now.",
         )
 
     def write_failed(self, error):
@@ -270,21 +280,17 @@ class MainWindow(QWidget):
         self.drive_box.setEnabled(True)
 
         self.stats_label.setText("Write failed.")
-
-        QMessageBox.critical(
-            self,
-            "Failed",
-            error
-        )
+        QMessageBox.critical(self, "Failed", error)
 
 
-app = QApplication(sys.argv)
-app.setWindowIcon(QIcon("dfuse_iso.png"))
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(resource_path("dfuse_iso.png")))
 
-with open("themes/dfuse_dark.qss", "r") as theme:
-    app.setStyleSheet(theme.read())
+    with open(resource_path("themes/dfuse_dark.qss"), "r") as theme:
+        app.setStyleSheet(theme.read())
 
-window = MainWindow()
-window.show()
+    window = MainWindow()
+    window.show()
 
-sys.exit(app.exec())
+    sys.exit(app.exec())

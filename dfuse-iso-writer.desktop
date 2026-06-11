@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=DFUSE ISO Writer
+Comment=Write ISO images to USB drives
+Exec=dfuse-iso-writer
+Icon=dfuse-iso-writer
+Terminal=false
+Type=Application
+Categories=Utility;System;
+
