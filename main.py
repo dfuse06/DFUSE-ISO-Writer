@@ -1,10 +1,11 @@
 import os
 import re
 import sys
+import time
 import subprocess
 
 from PySide6.QtCore import QThread, Signal
-
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -15,14 +16,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QMessageBox,
     QProgressBar,
+    QGraphicsDropShadowEffect,
 )
-
-from PySide6.QtWidgets import QGraphicsDropShadowEffect
-from PySide6.QtGui import QColor
 
 
 class WriterThread(QThread):
     progress = Signal(int)
+    stats = Signal(str)
     finished_ok = Signal()
     failed = Signal(str)
 
@@ -33,6 +33,7 @@ class WriterThread(QThread):
 
     def run(self):
         iso_size = os.path.getsize(self.iso_path)
+        start_time = time.time()
 
         command = [
             "pkexec",
@@ -57,10 +58,27 @@ class WriterThread(QThread):
 
             if line:
                 match = re.search(r"(\d+)\s+bytes", line)
+
                 if match:
                     written = int(match.group(1))
+                    elapsed = max(time.time() - start_time, 1)
+
                     percent = int((written / iso_size) * 100)
+                    speed_mbs = (written / elapsed) / (1024 * 1024)
+
+                    remaining_bytes = max(iso_size - written, 0)
+
+                    if speed_mbs > 0:
+                        eta_seconds = remaining_bytes / (speed_mbs * 1024 * 1024)
+                    else:
+                        eta_seconds = 0
+
+                    eta_text = self.format_time(eta_seconds)
+
                     self.progress.emit(min(percent, 100))
+                    self.stats.emit(
+                        f"Speed: {speed_mbs:.1f} MB/s  |  ETA: {eta_text}"
+                    )
 
             if process.poll() is not None:
                 break
@@ -69,17 +87,37 @@ class WriterThread(QThread):
 
         if process.returncode == 0:
             self.progress.emit(100)
+            self.stats.emit("Speed: Complete  |  ETA: 0s")
             subprocess.run(["sync"])
             self.finished_ok.emit()
         else:
             self.failed.emit(stderr_output or "ISO write failed.")
+
+    def format_time(self, seconds):
+        seconds = int(seconds)
+
+        if seconds < 60:
+            return f"{seconds}s"
+
+        minutes = seconds // 60
+        seconds = seconds % 60
+
+        if minutes < 60:
+            return f"{minutes}m {seconds}s"
+
+        hours = minutes // 60
+        minutes = minutes % 60
+
+        return f"{hours}h {minutes}m"
+
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("DFUSE ISO Writer v0.1")
-        self.resize(700, 500)
+        self.resize(700, 520)
+        self.setWindowIcon(QIcon("dfuse_iso.png"))
 
         self.iso_path = ""
         self.writer_thread = None
@@ -88,6 +126,7 @@ class MainWindow(QWidget):
 
         self.title = QLabel("DFUSE ISO Writer v0.1")
         self.title.setObjectName("title")
+
         self.iso_label = QLabel("No ISO Selected")
 
         self.select_btn = QPushButton("Select ISO")
@@ -98,6 +137,7 @@ class MainWindow(QWidget):
 
         self.refresh_btn = QPushButton("Refresh USB Devices")
         self.refresh_btn.clicked.connect(self.load_drives)
+
         self.write_btn = QPushButton("Write ISO to USB")
         self.write_btn.clicked.connect(self.write_iso)
 
@@ -105,12 +145,14 @@ class MainWindow(QWidget):
         glow.setBlurRadius(25)
         glow.setColor(QColor("#a855f7"))
         glow.setOffset(0)
-
         self.write_btn.setGraphicsEffect(glow)
+
+        self.stats_label = QLabel("Speed: -- MB/s  |  ETA: --")
+        self.stats_label.setObjectName("stats")
 
         self.progress = QProgressBar()
         self.progress.setValue(0)
-        
+        self.progress.setFormat("%p%")
 
         layout.addWidget(self.title)
         layout.addWidget(self.iso_label)
@@ -119,6 +161,7 @@ class MainWindow(QWidget):
         layout.addWidget(self.drive_box)
         layout.addWidget(self.refresh_btn)
         layout.addWidget(self.write_btn)
+        layout.addWidget(self.stats_label)
         layout.addWidget(self.progress)
 
         self.setLayout(layout)
@@ -134,14 +177,16 @@ class MainWindow(QWidget):
 
         if file_path:
             self.iso_path = file_path
-            self.iso_label.setText(os.path.basename(file_path))
+            size_gb = os.path.getsize(file_path) / (1024 ** 3)
+            self.iso_label.setText(f"{os.path.basename(file_path)} | {size_gb:.2f} GB")
             self.progress.setValue(0)
+            self.stats_label.setText("Speed: -- MB/s  |  ETA: --")
 
     def load_drives(self):
         self.drive_box.clear()
 
         result = subprocess.run(
-            ["lsblk", "-dn", "-o", "NAME,SIZE,TRAN,TYPE"],
+            ["lsblk", "-dn", "-o", "NAME,SIZE,TRAN,TYPE,MODEL,VENDOR"],
             capture_output=True,
             text=True
         )
@@ -156,10 +201,12 @@ class MainWindow(QWidget):
                 size = parts[1]
                 tran = parts[2]
                 dev_type = parts[3]
+                extra_info = " ".join(parts[4:]) if len(parts) > 4 else "Unknown USB"
 
                 if tran == "usb" and dev_type == "disk":
                     device = f"/dev/{name}"
-                    self.drive_box.addItem(f"{device} ({size})", device)
+                    display_text = f"{device} | {size} | {extra_info}"
+                    self.drive_box.addItem(display_text, device)
                     found_usb = True
 
         if not found_usb:
@@ -186,6 +233,9 @@ class MainWindow(QWidget):
             return
 
         self.progress.setValue(0)
+        self.progress.setFormat("%p%")
+        self.stats_label.setText("Starting write...")
+
         self.select_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
         self.write_btn.setEnabled(False)
@@ -193,6 +243,7 @@ class MainWindow(QWidget):
 
         self.writer_thread = WriterThread(self.iso_path, device)
         self.writer_thread.progress.connect(self.progress.setValue)
+        self.writer_thread.stats.connect(self.stats_label.setText)
         self.writer_thread.finished_ok.connect(self.write_finished)
         self.writer_thread.failed.connect(self.write_failed)
         self.writer_thread.start()
@@ -202,6 +253,9 @@ class MainWindow(QWidget):
         self.refresh_btn.setEnabled(True)
         self.write_btn.setEnabled(True)
         self.drive_box.setEnabled(True)
+
+        self.stats_label.setText("Write complete.")
+        self.progress.setValue(100)
 
         QMessageBox.information(
             self,
@@ -215,6 +269,8 @@ class MainWindow(QWidget):
         self.write_btn.setEnabled(True)
         self.drive_box.setEnabled(True)
 
+        self.stats_label.setText("Write failed.")
+
         QMessageBox.critical(
             self,
             "Failed",
@@ -223,6 +279,7 @@ class MainWindow(QWidget):
 
 
 app = QApplication(sys.argv)
+app.setWindowIcon(QIcon("dfuse_iso.png"))
 
 with open("themes/dfuse_dark.qss", "r") as theme:
     app.setStyleSheet(theme.read())
